@@ -19,7 +19,6 @@ echo "#!$SH_PATH" > ddns.sh
 echo "" >> ddns.sh
 echo "ZONE_ID=$ZONE_ID" >> ddns.sh
 echo "CLOUDFLARE_API_TOKEN=$TOKEN" >> ddns.sh
-echo "" >> ddns.sh
 cat payload.sh >> ddns.sh
 
 SERVICE_PATH=$(realpath $(dirname $0))/ddns.sh
