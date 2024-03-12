@@ -1,5 +1,5 @@
 
-IP=$(curl -s https://cloudflare.com/cdn-cgi/trace | grep -E '^ip' | cut -d = -f 2)
+IP=$(curl -s https://cloudflare.com/cdn-cgi/trace | grep -E '^ip' | cut -d '=' -f 2)
 
 if [ -n "$IP" ]
 then
