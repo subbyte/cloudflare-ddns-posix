@@ -1,0 +1,80 @@
+#!/bin/sh
+
+# cron job may not have PATH defined
+PATH=/sbin:/usr/sbin:/bin:/usr/bin:/usr/X11R6/bin:/usr/local/sbin:/usr/local/bin
+
+for cmd in dig curl jq; do
+    if [ ! -x "$(command -v $cmd)" ]; then
+        >&2 echo "Requirement unmet: $cmd"
+        exit 1
+    fi
+done
+
+if [ "$#" -lt 2 ] || [ ! -e "$1" ]; then
+    >&2 echo "Usage: $0 key_file_path sentinel_domain"
+    exit 1
+fi
+
+if [ -r $1 ]; then
+    . $1
+else
+    >&2 echo "key file access failed"
+    exit 1
+fi
+
+if [ -z "${ZONE_ID+x}" ] || [ -z "${API_TOKEN+x}" ]; then
+    >&2 echo "Cloudflare credentials not found in key file"
+    exit 1
+fi
+
+SIP=$(dig +short $2 2>/dev/null)
+if ! echo "$SIP" | grep -E -q '^[0-9]{1,3}(\.[0-9]{1,3}){3}$'; then
+    >&2 echo "Invalid sentinel domain: $2"
+    exit 1
+fi
+
+IP=$(curl -s https://cloudflare.com/cdn-cgi/trace | grep -E '^ip' | cut -d '=' -f 2)
+if ! echo "$IP" | grep -E -q '^[0-9]{1,3}(\.[0-9]{1,3}){3}$'; then
+    >&2 echo "Obtaining public IP failed"
+    exit 1
+fi
+
+if [ "$SIP" != "$IP" ]; then
+    RECORDS_FILE=$(mktemp)
+    curl --silent --request GET \
+        --url "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/dns_records" \
+        --header "Content-Type: application/json" \
+        --header "Authorization: Bearer $API_TOKEN" \
+        -o $RECORDS_FILE
+
+    if jq -r '.success' $RECORDS_FILE | grep -q true; then
+        RECORD_IDS=$(jq --arg IP $IP -r '.result[] | select(.content != $IP) | .id' $RECORDS_FILE)
+
+        for RECORD_ID in $RECORD_IDS; do
+            DOMAIN_NAME=$(jq --arg ID $RECORD_ID -r '.result[] | select(.id == $ID) | .name' $RECORDS_FILE)
+            PROXIED=$(jq --arg ID $RECORD_ID -r '.result[] | select(.id == $ID) | .proxied' $RECORDS_FILE)
+
+            echo "Outdated IP detected at $DOMAIN_NAME"
+
+            RESULT_FILE=$(mktemp)
+            curl --silent --request PUT \
+                --url https://api.cloudflare.com/client/v4/zones/$ZONE_ID/dns_records/$RECORD_ID \
+                --header "Content-Type: application/json" \
+                --header "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+                --data "{\"type\":\"A\",\"name\":\"$DOMAIN_NAME\",\"content\":\"$IP\",\"proxied\":$PROXIED}" \
+                -o $RESULT_FILE
+
+            if jq -r '.success' $RESULT_FILE | grep -q true; then
+                echo "DNS update successfully"
+            else
+                ERROR=$(jq -c '.errors' $RECORDS_FILE)
+                >&2 echo "DNS update failed: $ERROR"
+            fi
+            rm $RESULT_FILE
+        done
+    else
+        ERROR=$(jq -c '.errors' $RECORDS_FILE)
+        >&2 echo "DNS access failed: $ERROR"
+    fi
+    rm $RECORDS_FILE
+fi
